@@ -21,6 +21,10 @@
 #define PRIORITY_LOW    ( tskIDLE_PRIORITY + 1 )
 #define TASK_STACK_SIZE configMINIMAL_STACK_SIZE
 
+#define configUSE_MUTEXES 1
+
+SemaphoreHandle_t SharedMutex = NULL;
+
 // Task handles for management
 TaskHandle_t xHighHandle = NULL;
 TaskHandle_t xMedHandle  = NULL;
@@ -34,16 +38,17 @@ SemaphoreHandle_t SharedSemaphore = NULL;
 // 1. Low Priority Thread
 void LowPriorityTask(void *pvParameters) {
     printf("[LOW] Running. Attempting to acquire semaphore...\n");
-
     // Step 1: Low priority grabs the semaphore immediately
-    if (xSemaphoreTake(SharedSemaphore, portMAX_DELAY) == pdTRUE) {
-        printf("[LOW] Acquired semaphore. Simulating long critical section...\n");
+    // if (xSemaphoreTake(SharedSemaphore, portMAX_DELAY) == pdTRUE) {
+    if (xSemaphoreTake(SharedMutex, portMAX_DELAY) == pdTRUE) {
+        printf("[LOW] Acquired semaphore...\n");
         // Burn CPU cycles or spin to simulate heavy work inside critical section
         // We use a busy-loop instead of vTaskDelay so the CPU stays busy at this priority
-        volatile uint32_t uiCount;
-        for (uiCount = 0; uiCount < 10000000; uiCount++);
-        printf("[LOW] Critical section finished. Releasing semaphore...\n");
-        xSemaphoreGive(SharedSemaphore);
+        // This tells the SDK to loop inside an assembly block until 40 ticks pass
+        busy_wait_at_least_cycles(30); // wait about 40 ticks (needs to be odd of high task)
+        printf("[LOW] Busy work done finished. Releasing semaphore...\n");
+       // xSemaphoreGive(SharedSemaphore);
+        xSemaphoreGive(SharedMutex);
     }
     vTaskDelete(NULL);
 }
@@ -51,8 +56,9 @@ void LowPriorityTask(void *pvParameters) {
 // 2. Medium Priority Thread
 void MedPriorityTask(void *pvParameters) {
     // Step 3: Start delayed relative to LOW, but before LOW finishes
-    vTaskDelay(pdMS_TO_TICKS(50));
     printf("[MED] Spawned. I do not care about the semaphore. Starting infinite computation...\n");
+    vTaskDelay(pdMS_TO_TICKS(25));
+
     // Spin infinitely. Because MED is higher priority than LOW, LOW will never run again.
     while (1) {
         volatile uint32_t uiKeepAlive = 0;
@@ -63,12 +69,15 @@ void MedPriorityTask(void *pvParameters) {
 // 3. High Priority Thread
 void HighPriorityTask(void *pvParameters) {
     // Step 2: Delay start slightly to guarantee LOW acquires the semaphore first
+    printf("[HIGH] Created. Demanding shared semaphore...\n");
     vTaskDelay(pdMS_TO_TICKS(20));
-    printf("[HIGH] Spawned. Demanding shared semaphore...\n");
+    printf("[HIGH]: attempting to take shared semaphore...\n");
     // Attempt to take the semaphore. Will block because LOW holds it.
-    if (xSemaphoreTake(SharedSemaphore, portMAX_DELAY) == pdTRUE) {
-        printf("[HIGH] SUCCESS! Acquired semaphore.\n");
-        xSemaphoreGive(SharedSemaphore);
+    // if (xSemaphoreTake(SharedSemaphore, portMAX_DELAY) == pdTRUE) {
+    if (xSemaphoreTake(SharedMutex, portMAX_DELAY) == pdTRUE) {
+        printf("[HIGH] Acquired semaphore.\n");
+        // xSemaphoreGive(SharedSemaphore);
+        xSemaphoreGive(SharedMutex);
     }
     vTaskDelete(NULL);
 }
@@ -83,10 +92,9 @@ void SupervisorTask(void *pvParameters) {
     xTaskCreate(MedPriorityTask,  "MedTask",  configMINIMAL_STACK_SIZE, NULL, PRIORITY_MED,  &xMedHandle);
 
     // Monitor execution (Supervisor spins while experiment runs)
-    vTaskDelay(pdMS_TO_TICKS(5000));
+    vTaskDelay(pdMS_TO_TICKS(10000));
 
     printf("\n=== Supervisor: Scenario Timeout Reached ===\n");
-    printf("[ANALYSIS] HighTask is trapped indefinitely. Priority Inversion achieved.\n");
 
     vTaskDelete(NULL);
 }
@@ -94,8 +102,10 @@ void SupervisorTask(void *pvParameters) {
 int main(void)
 {
     stdio_init_all();
+    sleep_ms(5000);
     TaskHandle_t main, side;
-    SharedSemaphore = xSemaphoreCreateCounting(1, 1);
+    // SharedSemaphore = xSemaphoreCreateCounting(1, 1); // semaphore
+    SharedMutex = xSemaphoreCreateMutex(); // mutex
     xTaskCreate(SupervisorTask, "supervisor Task",
                 TASK_STACK_SIZE, NULL, PRIORITY_HIGH, &main);
     vTaskStartScheduler();
